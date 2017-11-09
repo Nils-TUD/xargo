@@ -35,6 +35,7 @@ fn build(
     ctoml: &cargo::Toml,
     home: &Home,
     rustflags: &Rustflags,
+    config: Option<&cargo::Config>,
     src: &Src,
     hash: u64,
     verbose: bool,
@@ -45,6 +46,11 @@ authors = ["The Rust Project Developers"]
 name = "sysroot"
 version = "0.0.0"
 "#;
+
+    let target_dir = match config {
+        Some(c) => c.target_dir()?,
+        None    => None,
+    };
 
     let rustlib = home.lock_rw(cmode.triple())?;
     rustlib
@@ -112,13 +118,16 @@ version = "0.0.0"
         }
 
         // Copy artifacts to Xargo sysroot
-        util::cp_r(
-            &td.join("target")
-                .join(cmode.triple())
-                .join(profile())
-                .join("deps"),
-            &dst,
-        )?;
+        match target_dir {
+            Some(dir) => util::cp_r(
+                &config.unwrap().root().join(dir).join(cmode.triple()).join(profile()).join("deps"),
+                &dst
+            ),
+            None      => util::cp_r(
+                &td.join("target").join(cmode.triple()).join(profile()).join("deps"),
+                &dst
+            ),
+        }?;
     }
 
     // Create hash file
@@ -180,6 +189,7 @@ pub fn update(
     root: &Root,
     rustflags: &Rustflags,
     meta: &VersionMeta,
+    config: Option<&cargo::Config>,
     src: &Src,
     sysroot: &Sysroot,
     verbose: bool,
@@ -198,6 +208,7 @@ pub fn update(
             &ctoml,
             home,
             rustflags,
+            config,
             src,
             hash,
             verbose,
