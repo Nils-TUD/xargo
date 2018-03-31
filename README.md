@@ -1,3 +1,5 @@
+# [PSA: Xargo is in maintenance mode](https://github.com/japaric/xargo/issues/193)
+
 [![crates.io](https://img.shields.io/crates/v/xargo.svg)](https://crates.io/crates/xargo)
 [![crates.io](https://img.shields.io/crates/d/xargo.svg)](https://crates.io/crates/xargo)
 
@@ -304,7 +306,6 @@ rand = {}
 
 [dependencies.compiler_builtins]
 features = ["mem"]
-git = "https://github.com/rust-lang-nursery/compiler-builtins"
 stage = 1
 
 [dependencies.std]
@@ -320,18 +321,33 @@ stage = 2
 
 - `std` is built as rlib *and* dylib. The dylib needs a panic library and an
   allocator.  If you do not specify the `panic-unwind` feature, you have to set
-  `panic = "abort"` in `Cargo.toml`.  Currently, it is not possible to build
-  without the `jemalloc` feature.  For some further information on this issue,
-  see [rust-lang/rust#43637](https://github.com/rust-lang/rust/issues/43637#issuecomment-320463578).
+  `panic = "abort"` in `Cargo.toml`.
 
-- When using compiler plugins (e.g. `serde_derive`) the target triple must be
-  provided even when compiling for the host platform due to the way cargo
-  handles compiler plugins. I.e., use `xargo build --target
-  x86_64-unknown-linux-gnu` instead of just `xargo
-  build`. (Surprisingly, these commands are NOT the same to Cargo.) You can
-  determine your host's target triple with `rustc -vV`. On *nix, the following
-  rune will extract the triple:
+- To build without the `jemalloc` feature include the following in `Xargo.toml`:
+
+  ``` toml
+  [dependencies.std]
+  features = ["force_alloc_system"]
+  ```
+
+  What this flag means is that every program compiled with this libstd can only use the system
+  allocator. If your program tries to set its own allocator, compilation will fail because now two
+  allocators are set (one by libstd, one by your program). For some further information on this
+  issue, see
+  [rust-lang/rust#43637](https://github.com/rust-lang/rust/issues/43637#issuecomment-320463578).
+
+- It's recommended that the `--target` option is always used for `xargo`. This is because it must
+  be provided even when compiling for the host platform due to the way cargo handles compiler
+  plugins (e.g. `serde_derive`) and build scripts (`build.rs`). This also applies to how all of the
+  dependant crates get compiled that use compiler plugins or build scripts. You can determine your
+  host's target triple with `rustc -vV`. On *nix, the following rune will extract the triple:
   `rustc -vV | egrep '^host: ' | sed 's/^host: //'`.
+
+- Remember that both `core` and `std` will get implicitly linked to your crate but *all the other
+  sysroot crates* will *not*. This means that if your Xargo.toml contains a crate like
+  `compiler_builtins` or `alloc` then you will have to add a `extern crate compiler_builtins` or
+  `extern crate alloc` *somewhere* in your dependency graph (either in your current crate or in some
+  of its dependencies).
 
 ## License
 

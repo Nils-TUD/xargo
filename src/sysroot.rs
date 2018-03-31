@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Command;
 use std::io::{self, Write};
-use std::fs;
+use std::{env, fs};
 
 use rustc_version::VersionMeta;
 use tempdir::TempDir;
@@ -14,7 +14,7 @@ use CompilationMode;
 use cargo::{Root, Rustflags};
 use errors::*;
 use extensions::CommandExt;
-use rustc::{Src, Sysroot};
+use rustc::{Src, Sysroot, Target};
 use util;
 use xargo::Home;
 use {cargo, xargo};
@@ -36,7 +36,7 @@ fn build(
     home: &Home,
     rustflags: &Rustflags,
     config: Option<&cargo::Config>,
-    src: &Src,
+    sysroot: &Sysroot,
     hash: u64,
     verbose: bool,
 ) -> Result<()> {
@@ -58,6 +58,23 @@ version = "0.0.0"
         .chain_err(|| format!("couldn't clear {}", rustlib.path().display()))?;
     let dst = rustlib.parent().join("lib");
     util::mkdir(&dst)?;
+
+    if cmode.triple().contains("pc-windows-gnu") {
+        let src = &sysroot.path()
+            .join("lib")
+            .join("rustlib")
+            .join(cmode.triple())
+            .join("lib");
+
+        // These are required for linking executables/dlls
+        for file in ["rsbegin.o", "rsend.o", "crt2.o", "dllcrt2.o"].iter() {
+            let file_src = src.join(file);
+            let file_dst = dst.join(file);
+            fs::copy(&file_src, &file_dst)
+                .chain_err(|| format!("couldn't copy {} to {}", file_src.display(), file_dst.display()))?;
+        }
+    }
+
     for (_, stage) in blueprint.stages {
         let td = TempDir::new("xargo").chain_err(|| "couldn't create a temporary directory")?;
         let td = td.path();
@@ -72,13 +89,6 @@ version = "0.0.0"
             stoml.push_str(&profile.to_string())
         }
 
-        {
-            // Recent rust-src comes with a lockfile for libstd. Use it.
-            let lockfile = src.path().join("Cargo.lock");
-            if lockfile.exists() {
-                fs::copy(lockfile, &td.join("Cargo.lock")).chain_err(|| "couldn't copy lock file")?;
-            }
-        }
         util::write(&td.join("Cargo.toml"), &stoml)?;
         util::mkdir(&td.join("src"))?;
         util::write(&td.join("src/lib.rs"), "")?;
@@ -92,6 +102,22 @@ version = "0.0.0"
             }
             cmd.env("RUSTFLAGS", flags);
             cmd.env_remove("CARGO_TARGET_DIR");
+
+            // As of rust-lang/cargo#4788 Cargo invokes rustc with a changed "current directory" so
+            // we can't assume that such directory will be the same as the directory from which
+            // Xargo was invoked. This is specially true when compiling the sysroot as the std
+            // source is provided as a workspace and Cargo will change the current directory to the
+            // root of the workspace when building one. To ensure rustc finds a target specification
+            // file stored in the current directory we'll set `RUST_TARGET_PATH`  to the current
+            // directory.
+            if env::var_os("RUST_TARGET_PATH").is_none() {
+                if let CompilationMode::Cross(ref target) = *cmode {
+                    if let Target::Custom { ref json, .. } = *target {
+                        cmd.env("RUST_TARGET_PATH", json.parent().unwrap());
+                    }
+                }
+            }
+
             cmd.arg("build");
 
             match () {
@@ -202,17 +228,7 @@ pub fn update(
     let hash = hash(cmode, &blueprint, rustflags, &ctoml, meta)?;
 
     if old_hash(cmode, home)? != Some(hash) {
-        build(
-            cmode,
-            blueprint,
-            &ctoml,
-            home,
-            rustflags,
-            config,
-            src,
-            hash,
-            verbose,
-        )?;
+        build(cmode, blueprint, &ctoml, home, rustflags, config, sysroot, hash, verbose)?;
     }
 
     // copy host artifacts into the sysroot, if necessary
@@ -241,6 +257,17 @@ pub fn update(
             .join(&meta.host)
             .join("lib"),
         &dst,
+    )?;
+
+    let bin_dst = lock.parent().join("bin");
+    util::mkdir(&bin_dst)?;
+    util::cp_r(
+        &sysroot
+            .path()
+            .join("lib/rustlib")
+            .join(&meta.host)
+            .join("bin"),
+        &bin_dst,
     )?;
 
     util::write(&hfile, hash)?;
